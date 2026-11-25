@@ -6,23 +6,48 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
-
+from scenarios import DEMO, SCENARIOS
 
 # ---------------------------------------------------------
-# Scenario registry
+# Test functions and exact integrals
 # ---------------------------------------------------------
-# Keep scenarios.py in the same folder as this app.py file.
-from scenarios import SCENARIOS
+CENTER = (0.70, 0.30)
+RADIUS = 0.15
+SIGMA = 0.06
 
 
-def evaluate_function(points, scenario_key):
-    """Evaluate the function belonging to the selected scenario."""
-    return SCENARIOS[scenario_key]["func"](points)
+def circle_indicator(points):
+    """1 inside the circle, 0 outside."""
+    dx = points[:, 0] - CENTER[0]
+    dy = points[:, 1] - CENTER[1]
+    return ((dx * dx + dy * dy) <= RADIUS**2).astype(float)
 
 
-def exact_integral(scenario_key):
-    """Return the reference integral for the selected scenario."""
-    return float(SCENARIOS[scenario_key]["exact"]())
+def gaussian_function(points):
+    """Narrow 2-D Gaussian used in the original Python code."""
+    dx = points[:, 0] - CENTER[0]
+    dy = points[:, 1] - CENTER[1]
+    return np.exp(-(dx * dx + dy * dy) / (2 * SIGMA**2))
+
+
+def gaussian_1d_integral(a, b, mu, sigma=SIGMA):
+    return sigma * math.sqrt(math.pi / 2) * (
+        math.erf((b - mu) / (math.sqrt(2) * sigma))
+        - math.erf((a - mu) / (math.sqrt(2) * sigma))
+    )
+
+
+# 원/가우시안 대신 시나리오 4개를 쓰기 위해 수정
+def exact_integral(test_name):
+    return SCENARIOS[test_name]["exact"]()
+
+
+def evaluate_function(points, test_name):
+    return SCENARIOS[test_name]["func"](points)
+
+
+def is_binary(test_name):
+    return SCENARIOS[test_name]["binary"]
 
 
 # ---------------------------------------------------------
@@ -229,27 +254,39 @@ st.caption(
     "sample allocation."
 )
 
+# 시나리오별 시연용 Seed·샘플 수를 자동으로 넣기 위해 추가
+def apply_demo_preset():
+    preset = DEMO[st.session_state["test_name"]]["main"]
+    st.session_state["n_samples"] = preset["n"]
+    st.session_state["seed"] = preset["seed"]
+
+
+if "test_name" not in st.session_state:
+    st.session_state["test_name"] = list(SCENARIOS)[0]
+    apply_demo_preset()
+
 with st.sidebar:
     st.header("Experiment Settings")
     n_samples = st.number_input(
         "Number of Samples",
         min_value=1000,
         max_value=500000,
-        value=10000,
         step=1000,
+        key="n_samples",
     )
     seed = st.number_input(
         "Random Seed",
         min_value=0,
         max_value=2**32 - 1,
-        value=42,
         step=1,
+        key="seed",
     )
-    scenario_key = st.selectbox(
-        "Scenario",
-        list(SCENARIOS.keys()),
-        format_func=lambda key: SCENARIOS[key]["label"],
-        help="Choose one of the four demonstration scenarios defined in scenarios.py.",
+    test_name = st.selectbox(
+        "Test Function",
+        list(SCENARIOS),
+        format_func=lambda k: SCENARIOS[k]["label"],
+        key="test_name",
+        on_change=apply_demo_preset,
     )
 
     with st.expander("Advanced MISER Settings"):
@@ -272,13 +309,13 @@ with st.sidebar:
     run_button = st.button("Run Comparison", type="primary", use_container_width=True)
 
     st.divider()
-    st.markdown("**Scenario description**")
-    st.write(SCENARIOS[scenario_key]["description"])
+    st.markdown(f"**Target:** {SCENARIOS[test_name]['description']}")
+    st.latex(rf"I = {exact_integral(test_name):.6f}")
 
 if run_button:
     bounds = [(0.0, 1.0), (0.0, 1.0)]
-    f = lambda pts: evaluate_function(pts, scenario_key)
-    actual = exact_integral(scenario_key)
+    f = lambda pts: evaluate_function(pts, test_name)
+    actual = exact_integral(test_name)
 
     # Independent generators make each run reproducible.
     plain_rng = np.random.default_rng(int(seed))
@@ -304,7 +341,7 @@ if run_button:
         miser_time = time.perf_counter() - start
 
     st.session_state["comparison"] = {
-        "scenario_key": scenario_key,
+        "test_name": test_name,
         "actual": actual,
         "plain": plain_result,
         "miser": miser_result,
@@ -318,8 +355,8 @@ if "comparison" not in st.session_state:
     st.stop()
 
 result = st.session_state["comparison"]
-if result["scenario_key"] != scenario_key:
-    st.warning("The selected scenario differs from the displayed run. Click Run Comparison to update the results.")
+if result["test_name"] != test_name:
+    st.warning("The selected test function differs from the displayed run. Click Run Comparison to update the results.")
     st.stop()
 
 actual = result["actual"]
@@ -330,12 +367,23 @@ plain_error = abs(plain["estimate"] - actual)
 miser_error = abs(miser["estimate"] - actual)
 
 st.subheader("Run Results")
+# 결과(Absolute Error) 하이라이트를 위해 추가
+st.markdown(
+    """<style>
+    .st-key-hlplainabs, .st-key-hlmiserabs, .st-key-hlerrorchart {
+        background: rgba(245, 158, 11, 0.18); border: 2px solid #f59e0b;
+        border-radius: 10px; padding: 4px 12px;
+    }
+    </style>""",
+    unsafe_allow_html=True,
+)
 left, right = st.columns(2)
 
 with left:
     st.markdown("### 🔵 Plain Monte Carlo")
     st.metric("Estimated Integral", f'{plain["estimate"]:.8f}')
-    st.metric("Absolute Error", f"{plain_error:.8f}")
+    with st.container(key="hlplainabs"):
+        st.metric("Absolute Error", f"{plain_error:.8f}")
     st.metric("Execution Time", f'{result["plain_time"]:.4f} s')
     st.caption(
         f'Evaluations: {plain["evaluations"]:,} | '
@@ -346,7 +394,8 @@ with left:
 with right:
     st.markdown("### 🟠 MISER Algorithm")
     st.metric("Estimated Integral", f'{miser["estimate"]:.8f}')
-    st.metric("Absolute Error", f"{miser_error:.8f}")
+    with st.container(key="hlmiserabs"):
+        st.metric("Absolute Error", f"{miser_error:.8f}")
     st.metric("Execution Time", f'{result["miser_time"]:.4f} s')
     st.caption(
         f'Evaluations: {miser["evaluations"]:,} | '
@@ -360,9 +409,8 @@ st.markdown(f"**True integral:** `{actual:.10f}`")
 # Client-side Plotly animation (avoids repeatedly rerendering the Streamlit page)
 st.subheader("Live Sampling Animation")
 st.caption(
-    "Press Play to reveal samples progressively. Each algorithm's progress is "
-    "scaled by its measured execution time: the faster one finishes earlier, "
-    "while the slower one continues."
+    "Press Play to reveal samples progressively. The animation runs inside the "
+    "3-D chart, so Streamlit does not redraw the entire page at every frame."
 )
 
 animation_seconds = st.select_slider(
@@ -372,10 +420,10 @@ animation_seconds = st.select_slider(
     format_func=lambda x: f"{x} seconds",
 )
 
-grid_axis = np.linspace(0, 1, 75)
+grid_axis = np.linspace(0, 1, 151)  # 좁은 봉우리·줄무늬가 보이게 수정
 xx, yy = np.meshgrid(grid_axis, grid_axis)
 grid_points = np.column_stack([xx.ravel(), yy.ravel()])
-zz = evaluate_function(grid_points, scenario_key).reshape(xx.shape)
+zz = evaluate_function(grid_points, test_name).reshape(xx.shape)
 
 # Use a bounded number of visible points to keep the browser animation smooth.
 animation_limit = min(1200, len(plain["points"]), len(miser["points"]))
@@ -413,12 +461,10 @@ for col in (1, 2):
     )
 
 def split_sample_groups(points, values):
-    """Separate zero-valued samples for binary scenarios; retain all continuous samples."""
-    if SCENARIOS[scenario_key]["binary"]:
+    """Return outside and inside point arrays (for Circle); Gaussian points are all active."""
+    if is_binary(test_name):
         inside_mask = values > 0
     else:
-        # Continuous-valued scenarios (interference and starlight):
-        # show every sample using the main algorithm colour.
         inside_mask = np.ones(len(values), dtype=bool)
     return (
         (points[~inside_mask], values[~inside_mask]),
@@ -431,13 +477,13 @@ for col, color, label in [
     (2, "#F28E2B", "MISER"),
 ]:
     outside_name = f"{label} outside"
-    inside_name = f"{label} samples" if not SCENARIOS[scenario_key]["binary"] else f"{label} inside"
+    inside_name = f"{label} samples" if not is_binary(test_name) else f"{label} inside"
     fig_anim.add_trace(
         go.Scatter3d(
             x=[], y=[], z=[], mode="markers",
             name=outside_name,
             marker=dict(color="#A0A7B4", size=2.5, opacity=0.48),
-            showlegend=(col == 1 and SCENARIOS[scenario_key]["binary"]),
+            showlegend=(col == 1 and is_binary(test_name)),
             hovertemplate="x=%{x:.3f}<br>y=%{y:.3f}<br>f=%{z:.4f}<extra></extra>",
         ),
         row=1, col=col,
@@ -454,7 +500,7 @@ for col, color, label in [
     )
 
 # MISER split boundaries remain static throughout playback.
-z_top = max(float(np.max(zz)), 1.0) if SCENARIOS[scenario_key]["binary"] else max(float(np.max(zz)) * 1.02, 0.05)
+z_top = max(float(np.max(zz)), 1.0 if is_binary(test_name) else 0.05)
 for split in miser["splits"]:
     box = split["bounds"]
     dim, coordinate = split["dimension"], split["coordinate"]
@@ -490,30 +536,13 @@ for frame_no in range(frame_count + 1):
         miser_anim_points[:count], miser_anim_values[:count]
     )
 
-    # Scale each algorithm's progress by its measured execution time.
-    # The slower algorithm uses the full playback duration; the faster one
-    # finishes earlier and keeps its final sample state visible.
+    # Display playback elapsed time as a deterministic timeline label.
     elapsed_label = animation_seconds * fraction
-    longest_runtime = max(result["plain_time"], result["miser_time"], 1e-12)
-    plain_duration = animation_seconds * result["plain_time"] / longest_runtime
-    miser_duration = animation_seconds * result["miser_time"] / longest_runtime
-
-    plain_progress = min(1.0, elapsed_label / max(plain_duration, 1e-12))
-    miser_progress = min(1.0, elapsed_label / max(miser_duration, 1e-12))
-    plain_count = min(animation_limit, int(animation_limit * plain_progress))
-    miser_count = min(animation_limit, int(animation_limit * miser_progress))
-
-    (p_out_pts, p_out_vals), (p_in_pts, p_in_vals) = split_sample_groups(
-        plain_anim_points[:plain_count], plain_anim_values[:plain_count]
-    )
-    (m_out_pts, m_out_vals), (m_in_pts, m_in_vals) = split_sample_groups(
-        miser_anim_points[:miser_count], miser_anim_values[:miser_count]
-    )
-
     status_title = (
-        f"Elapsed: {elapsed_label:.1f}s / {animation_seconds:.1f}s"
-        f"  |  Plain MC: {plain_progress * 100:.0f}%"
-        f"  |  MISER: {miser_progress * 100:.0f}%"
+        f"Sampling progress: {fraction * 100:.0f}%"
+        f"  |  Elapsed: {elapsed_label:.1f}s / {animation_seconds:.1f}s"
+        f"  |  Plain: {count:,}/{animation_limit:,}"
+        f"  |  MISER: {count:,}/{animation_limit:,}"
     )
 
     frames.append(
@@ -643,10 +672,8 @@ st.plotly_chart(
 
 st.caption(
     f"Each algorithm displays up to {animation_limit:,} representative samples. "
-    f"Measured execution times: Plain MC {result['plain_time']:.4f}s, "
-    f"MISER {result['miser_time']:.4f}s. The slower algorithm uses the full "
-    "selected playback duration; the faster algorithm finishes earlier in "
-    "proportion to its measured runtime. Use Play/Pause or the frame slider."
+    "Use Play/Pause or the frame slider to control the animation. "
+    "The chart animation is client-side; actual algorithm execution times are shown above."
 )
 
 # Comparison table and chart
@@ -660,7 +687,7 @@ comparison_df = pd.DataFrame({
     "Function Evaluations": [plain["evaluations"], miser["evaluations"]],
     "Maximum Depth": [plain["depth"], miser["depth"]],
 })
-st.dataframe(comparison_df, use_container_width=True, hide_index=True)
+st.dataframe(comparison_df.style.set_properties(subset=["Absolute Error"], **{"background-color": "rgba(245, 158, 11, 0.18)", "font-weight": "bold"}), use_container_width=True, hide_index=True)
 
 error_fig = go.Figure()
 error_fig.add_trace(go.Bar(
@@ -675,7 +702,8 @@ error_fig.update_layout(
     height=350,
     showlegend=False,
 )
-st.plotly_chart(error_fig, use_container_width=True)
+with st.container(key="hlerrorchart"):
+    st.plotly_chart(error_fig, use_container_width=True)
 
 time_fig = go.Figure()
 time_fig.add_trace(go.Bar(
