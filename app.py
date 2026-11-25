@@ -525,24 +525,37 @@ for split in miser["splits"]:
 # Build frames once; Plotly animates only the four point traces in the browser.
 frame_count = 30
 frames = []
+# The slower algorithm determines the overall playback window.
+# Each algorithm advances in proportion to its measured execution time:
+# the faster one reaches 100% earlier and then keeps its final points visible.
+plain_time = max(float(result["plain_time"]), 1e-9)
+miser_time = max(float(result["miser_time"]), 1e-9)
+slowest_time = max(plain_time, miser_time)
+
+plain_duration = animation_seconds * (plain_time / slowest_time)
+miser_duration = animation_seconds * (miser_time / slowest_time)
+
 for frame_no in range(frame_count + 1):
     fraction = frame_no / frame_count
-    count = max(0, int(animation_limit * fraction))
+    elapsed_label = animation_seconds * fraction
+
+    plain_progress = min(1.0, elapsed_label / max(plain_duration, 1e-9))
+    miser_progress = min(1.0, elapsed_label / max(miser_duration, 1e-9))
+
+    plain_count = max(0, int(animation_limit * plain_progress))
+    miser_count = max(0, int(animation_limit * miser_progress))
 
     (p_out_pts, p_out_vals), (p_in_pts, p_in_vals) = split_sample_groups(
-        plain_anim_points[:count], plain_anim_values[:count]
+        plain_anim_points[:plain_count], plain_anim_values[:plain_count]
     )
     (m_out_pts, m_out_vals), (m_in_pts, m_in_vals) = split_sample_groups(
-        miser_anim_points[:count], miser_anim_values[:count]
+        miser_anim_points[:miser_count], miser_anim_values[:miser_count]
     )
 
-    # Display playback elapsed time as a deterministic timeline label.
-    elapsed_label = animation_seconds * fraction
     status_title = (
-        f"Sampling progress: {fraction * 100:.0f}%"
-        f"  |  Elapsed: {elapsed_label:.1f}s / {animation_seconds:.1f}s"
-        f"  |  Plain: {count:,}/{animation_limit:,}"
-        f"  |  MISER: {count:,}/{animation_limit:,}"
+        f"Sampling progress  |  Elapsed: {elapsed_label:.1f}s / {animation_seconds:.1f}s"
+        f"  |  Plain: {plain_progress * 100:.0f}% ({plain_count:,}/{animation_limit:,})"
+        f"  |  MISER: {miser_progress * 100:.0f}% ({miser_count:,}/{animation_limit:,})"
     )
 
     frames.append(
@@ -563,12 +576,20 @@ fig_anim.frames = frames
 
 # Show a small initial batch immediately so the chart is never blank
 # while the user is deciding whether to press Play.
-initial_count = max(1, animation_limit // frame_count)
+initial_elapsed = animation_seconds / frame_count
+initial_plain_count = max(1, min(
+    animation_limit,
+    int(animation_limit * min(1.0, initial_elapsed / max(plain_duration, 1e-9)))
+))
+initial_miser_count = max(1, min(
+    animation_limit,
+    int(animation_limit * min(1.0, initial_elapsed / max(miser_duration, 1e-9)))
+))
 (p0_out, p0_out_v), (p0_in, p0_in_v) = split_sample_groups(
-    plain_anim_points[:initial_count], plain_anim_values[:initial_count]
+    plain_anim_points[:initial_plain_count], plain_anim_values[:initial_plain_count]
 )
 (m0_out, m0_out_v), (m0_in, m0_in_v) = split_sample_groups(
-    miser_anim_points[:initial_count], miser_anim_values[:initial_count]
+    miser_anim_points[:initial_miser_count], miser_anim_values[:initial_miser_count]
 )
 fig_anim.data[2].x, fig_anim.data[2].y, fig_anim.data[2].z = (
     p0_out[:, 0], p0_out[:, 1], p0_out_v
@@ -673,7 +694,7 @@ st.plotly_chart(
 st.caption(
     f"Each algorithm displays up to {animation_limit:,} representative samples. "
     "Use Play/Pause or the frame slider to control the animation. "
-    "The chart animation is client-side; actual algorithm execution times are shown above."
+    "Each algorithm completes in proportion to its measured execution time; the faster one stays complete while the slower one continues."
 )
 
 # Comparison table and chart
