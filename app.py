@@ -9,48 +9,20 @@ import streamlit as st
 
 
 # ---------------------------------------------------------
-# Test functions and exact integrals
+# Scenario registry
 # ---------------------------------------------------------
-CENTER = (0.70, 0.30)
-RADIUS = 0.15
-SIGMA = 0.06
+# Keep scenarios.py in the same folder as this app.py file.
+from scenarios import SCENARIOS
 
 
-def circle_indicator(points):
-    """1 inside the circle, 0 outside."""
-    dx = points[:, 0] - CENTER[0]
-    dy = points[:, 1] - CENTER[1]
-    return ((dx * dx + dy * dy) <= RADIUS**2).astype(float)
+def evaluate_function(points, scenario_key):
+    """Evaluate the function belonging to the selected scenario."""
+    return SCENARIOS[scenario_key]["func"](points)
 
 
-def gaussian_function(points):
-    """Narrow 2-D Gaussian used in the original Python code."""
-    dx = points[:, 0] - CENTER[0]
-    dy = points[:, 1] - CENTER[1]
-    return np.exp(-(dx * dx + dy * dy) / (2 * SIGMA**2))
-
-
-def gaussian_1d_integral(a, b, mu, sigma=SIGMA):
-    return sigma * math.sqrt(math.pi / 2) * (
-        math.erf((b - mu) / (math.sqrt(2) * sigma))
-        - math.erf((a - mu) / (math.sqrt(2) * sigma))
-    )
-
-
-def exact_integral(test_name):
-    if test_name == "Circle":
-        # The entire circle lies inside the unit square.
-        return math.pi * RADIUS**2
-    return (
-        gaussian_1d_integral(0, 1, CENTER[0])
-        * gaussian_1d_integral(0, 1, CENTER[1])
-    )
-
-
-def evaluate_function(points, test_name):
-    if test_name == "Circle":
-        return circle_indicator(points)
-    return gaussian_function(points)
+def exact_integral(scenario_key):
+    """Return the reference integral for the selected scenario."""
+    return float(SCENARIOS[scenario_key]["exact"]())
 
 
 # ---------------------------------------------------------
@@ -273,10 +245,11 @@ with st.sidebar:
         value=42,
         step=1,
     )
-    test_name = st.selectbox(
-        "Test Function",
-        ["Circle", "Gaussian"],
-        help="Circle: indicator function. Gaussian: the narrow Gaussian from the original code.",
+    scenario_key = st.selectbox(
+        "Scenario",
+        list(SCENARIOS.keys()),
+        format_func=lambda key: SCENARIOS[key]["label"],
+        help="Choose one of the four demonstration scenarios defined in scenarios.py.",
     )
 
     with st.expander("Advanced MISER Settings"):
@@ -299,22 +272,13 @@ with st.sidebar:
     run_button = st.button("Run Comparison", type="primary", use_container_width=True)
 
     st.divider()
-    if test_name == "Circle":
-        st.markdown(
-            "**Target:** circle centered at (0.70, 0.30), radius = 0.15.  \n"
-            "The function is 1 inside the circle and 0 outside."
-        )
-        st.latex(r"I = \pi r^2 \approx 0.070686")
-    else:
-        st.markdown(
-            "**Target:** narrow 2-D Gaussian centered at (0.70, 0.30), "
-            "with sigma = 0.06."
-        )
+    st.markdown("**Scenario description**")
+    st.write(SCENARIOS[scenario_key]["description"])
 
 if run_button:
     bounds = [(0.0, 1.0), (0.0, 1.0)]
-    f = lambda pts: evaluate_function(pts, test_name)
-    actual = exact_integral(test_name)
+    f = lambda pts: evaluate_function(pts, scenario_key)
+    actual = exact_integral(scenario_key)
 
     # Independent generators make each run reproducible.
     plain_rng = np.random.default_rng(int(seed))
@@ -340,7 +304,7 @@ if run_button:
         miser_time = time.perf_counter() - start
 
     st.session_state["comparison"] = {
-        "test_name": test_name,
+        "scenario_key": scenario_key,
         "actual": actual,
         "plain": plain_result,
         "miser": miser_result,
@@ -354,8 +318,8 @@ if "comparison" not in st.session_state:
     st.stop()
 
 result = st.session_state["comparison"]
-if result["test_name"] != test_name:
-    st.warning("The selected test function differs from the displayed run. Click Run Comparison to update the results.")
+if result["scenario_key"] != scenario_key:
+    st.warning("The selected scenario differs from the displayed run. Click Run Comparison to update the results.")
     st.stop()
 
 actual = result["actual"]
@@ -411,7 +375,7 @@ animation_seconds = st.select_slider(
 grid_axis = np.linspace(0, 1, 75)
 xx, yy = np.meshgrid(grid_axis, grid_axis)
 grid_points = np.column_stack([xx.ravel(), yy.ravel()])
-zz = evaluate_function(grid_points, test_name).reshape(xx.shape)
+zz = evaluate_function(grid_points, scenario_key).reshape(xx.shape)
 
 # Use a bounded number of visible points to keep the browser animation smooth.
 animation_limit = min(1200, len(plain["points"]), len(miser["points"]))
@@ -449,10 +413,12 @@ for col in (1, 2):
     )
 
 def split_sample_groups(points, values):
-    """Return outside and inside point arrays (for Circle); Gaussian points are all active."""
-    if test_name == "Circle":
+    """Separate zero-valued samples for binary scenarios; retain all continuous samples."""
+    if SCENARIOS[scenario_key]["binary"]:
         inside_mask = values > 0
     else:
+        # Continuous-valued scenarios (interference and starlight):
+        # show every sample using the main algorithm colour.
         inside_mask = np.ones(len(values), dtype=bool)
     return (
         (points[~inside_mask], values[~inside_mask]),
@@ -465,13 +431,13 @@ for col, color, label in [
     (2, "#F28E2B", "MISER"),
 ]:
     outside_name = f"{label} outside"
-    inside_name = f"{label} samples" if test_name == "Gaussian" else f"{label} inside"
+    inside_name = f"{label} samples" if not SCENARIOS[scenario_key]["binary"] else f"{label} inside"
     fig_anim.add_trace(
         go.Scatter3d(
             x=[], y=[], z=[], mode="markers",
             name=outside_name,
             marker=dict(color="#A0A7B4", size=2.5, opacity=0.48),
-            showlegend=(col == 1 and test_name == "Circle"),
+            showlegend=(col == 1 and SCENARIOS[scenario_key]["binary"]),
             hovertemplate="x=%{x:.3f}<br>y=%{y:.3f}<br>f=%{z:.4f}<extra></extra>",
         ),
         row=1, col=col,
@@ -488,7 +454,7 @@ for col, color, label in [
     )
 
 # MISER split boundaries remain static throughout playback.
-z_top = max(float(np.max(zz)), 1.0 if test_name == "Circle" else 0.05)
+z_top = max(float(np.max(zz)), 1.0) if SCENARIOS[scenario_key]["binary"] else max(float(np.max(zz)) * 1.02, 0.05)
 for split in miser["splits"]:
     box = split["bounds"]
     dim, coordinate = split["dimension"], split["coordinate"]
