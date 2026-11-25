@@ -396,8 +396,9 @@ st.markdown(f"**True integral:** `{actual:.10f}`")
 # Client-side Plotly animation (avoids repeatedly rerendering the Streamlit page)
 st.subheader("Live Sampling Animation")
 st.caption(
-    "Press Play to reveal samples progressively. The animation runs inside the "
-    "3-D chart, so Streamlit does not redraw the entire page at every frame."
+    "Press Play to reveal samples progressively. Each algorithm's progress is "
+    "scaled by its measured execution time: the faster one finishes earlier, "
+    "while the slower one continues."
 )
 
 animation_seconds = st.select_slider(
@@ -523,13 +524,30 @@ for frame_no in range(frame_count + 1):
         miser_anim_points[:count], miser_anim_values[:count]
     )
 
-    # Display playback elapsed time as a deterministic timeline label.
+    # Scale each algorithm's progress by its measured execution time.
+    # The slower algorithm uses the full playback duration; the faster one
+    # finishes earlier and keeps its final sample state visible.
     elapsed_label = animation_seconds * fraction
+    longest_runtime = max(result["plain_time"], result["miser_time"], 1e-12)
+    plain_duration = animation_seconds * result["plain_time"] / longest_runtime
+    miser_duration = animation_seconds * result["miser_time"] / longest_runtime
+
+    plain_progress = min(1.0, elapsed_label / max(plain_duration, 1e-12))
+    miser_progress = min(1.0, elapsed_label / max(miser_duration, 1e-12))
+    plain_count = min(animation_limit, int(animation_limit * plain_progress))
+    miser_count = min(animation_limit, int(animation_limit * miser_progress))
+
+    (p_out_pts, p_out_vals), (p_in_pts, p_in_vals) = split_sample_groups(
+        plain_anim_points[:plain_count], plain_anim_values[:plain_count]
+    )
+    (m_out_pts, m_out_vals), (m_in_pts, m_in_vals) = split_sample_groups(
+        miser_anim_points[:miser_count], miser_anim_values[:miser_count]
+    )
+
     status_title = (
-        f"Sampling progress: {fraction * 100:.0f}%"
-        f"  |  Elapsed: {elapsed_label:.1f}s / {animation_seconds:.1f}s"
-        f"  |  Plain: {count:,}/{animation_limit:,}"
-        f"  |  MISER: {count:,}/{animation_limit:,}"
+        f"Elapsed: {elapsed_label:.1f}s / {animation_seconds:.1f}s"
+        f"  |  Plain MC: {plain_progress * 100:.0f}%"
+        f"  |  MISER: {miser_progress * 100:.0f}%"
     )
 
     frames.append(
@@ -659,8 +677,10 @@ st.plotly_chart(
 
 st.caption(
     f"Each algorithm displays up to {animation_limit:,} representative samples. "
-    "Use Play/Pause or the frame slider to control the animation. "
-    "The chart animation is client-side; actual algorithm execution times are shown above."
+    f"Measured execution times: Plain MC {result['plain_time']:.4f}s, "
+    f"MISER {result['miser_time']:.4f}s. The slower algorithm uses the full "
+    "selected playback duration; the faster algorithm finishes earlier in "
+    "proportion to its measured runtime. Use Play/Pause or the frame slider."
 )
 
 # Comparison table and chart
